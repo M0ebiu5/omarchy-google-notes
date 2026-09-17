@@ -93,6 +93,18 @@ omarchy-shell shell rescanPlugins
 omarchy bar put waltermonschein.google-notes --section right
 ```
 
+### Removal
+
+```bash
+omarchy plugin remove waltermonschein.google-notes
+```
+
+This removes the plugin from the bar and its manifest/QML files. Your Keep master token and cached state are stored separately (not inside the plugin folder) — sign out from the panel first if you want those deleted too, or remove them manually:
+
+```bash
+rm -rf ~/.local/state/omarchy/waltermonschein.google-notes ~/.config/omarchy/waltermonschein.google-notes
+```
+
 ---
 
 ## ⚙️ Configuration Options
