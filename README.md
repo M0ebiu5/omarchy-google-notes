@@ -30,7 +30,7 @@ If that trade-off doesn't work for you, consider [omarchy-google-tasks](https://
 - **➕ Quick Add:** type any item and press `Enter` to add it instantly.
 - **🗒️ Multi-note switching:** seamlessly switch between different checklist notes.
 - **🔒 Local-only credentials:** your token stays on your machine with restricted (`0600`) permissions — nothing is sent anywhere except Google's own servers.
-- **📦 Self-contained dependency install:** the two required Python packages install into a private virtual environment scoped to this plugin, not your system Python.
+- **📦 Self-contained, hash-verified dependency install:** the required Python packages install into a private virtual environment scoped to this plugin, not your system Python — pinned to exact versions with sha256 hashes in [`bin/requirements.lock.txt`](bin/requirements.lock.txt) and installed with `pip install --require-hashes`, so pip refuses to install anything that doesn't match those hashes.
 
 ---
 
@@ -38,10 +38,12 @@ If that trade-off doesn't work for you, consider [omarchy-google-tasks](https://
 
 ### Step 1: Install the plugin's dependencies
 
-Google Keep sync needs [`gkeepapi`](https://pypi.org/project/gkeepapi/) (which pulls in `gpsoauth`), neither of which is in the Python standard library. Rather than touching your system Python (fragile on Arch, whose Python is "externally managed"), the plugin bootstraps its own private virtual environment the first time you use it:
+Google Keep sync needs [`gkeepapi`](https://pypi.org/project/gkeepapi/) and [`gpsoauth`](https://pypi.org/project/gpsoauth/), neither of which is in the Python standard library. Rather than touching your system Python (fragile on Arch, whose Python is "externally managed"), the plugin bootstraps its own private virtual environment the first time you use it:
 
 1. Open the **Google Notes** panel from the Omarchy top bar.
-2. Click **Install Dependencies**. This creates a venv under the plugin's state directory and `pip install`s `gkeepapi` into it (needs a working internet connection; takes ~10–30 seconds).
+2. Click **Install Dependencies**. This creates a venv under the plugin's state directory and installs the exact, pinned package set from [`bin/requirements.lock.txt`](bin/requirements.lock.txt) into it via `pip install --require-hashes --no-deps` (needs a working internet connection; takes ~10–30 seconds).
+
+Every direct and transitive dependency (`gkeepapi`, `gpsoauth`, `requests`, `pycryptodomex`, etc.) is pinned to an exact version and sha256 hash in that lock file, and `--require-hashes` makes pip refuse to install anything whose downloaded artifact doesn't match. A later, unreviewed release on PyPI — of `gkeepapi` itself or any dependency in its chain — can't silently swap in code that runs against your Keep master token; the lock file only moves when a maintainer deliberately regenerates and commits it (see the comment at the top of that file for the exact command).
 
 ### Step 2: Getting a Token
 
@@ -133,6 +135,7 @@ There's also a **"Show finished items"** toggle in the panel's Settings (gear ic
 ## 🛡️ Privacy & Security
 
 - **No plugin-run servers:** communicates directly and exclusively with Google's own (unofficial, internal) Keep endpoints.
+- **Pinned, hash-verified dependencies:** `gkeepapi`, `gpsoauth`, and their full transitive dependency chain are installed from [`bin/requirements.lock.txt`](bin/requirements.lock.txt) with `pip install --require-hashes --no-deps`, so the runtime can never resolve a mutable/unreviewed package version — including of the code that handles your Keep master token.
 - **Local credential storage:** the master token and account email are saved in `~/.local/state/omarchy/waltermonschein.google-notes/` (falling back to `~/.config/omarchy/waltermonschein.google-notes/`) with `0600` permissions.
 - **Unscoped access:** as noted above, the token grants full Keep read/write access. Use a dedicated Google account if you're at all concerned about blast radius.
 - **Sign out anytime** from the panel's settings to delete the locally stored token and cached state.
@@ -144,7 +147,7 @@ There's also a **"Show finished items"** toggle in the panel's Settings (gear ic
 - Google Keep list items don't have Google Tasks-style due dates or reminders, so there's no overdue/today badge here — just checkboxes.
 - Only notes with **"Show checkboxes"** enabled in Keep show up as syncable lists.
 - Each panel action is a fresh, one-shot sync against Keep — there's no realtime push, so very rapid back-to-back edits from multiple devices can occasionally race.
-- This relies on an unofficial protocol. If Google changes something server-side, sync can break until `gkeepapi`/`gpsoauth` are updated upstream — at which point re-running "Install Dependencies" pulls the latest release.
+- This relies on an unofficial protocol. If Google changes something server-side, sync can break until `gkeepapi`/`gpsoauth` are updated upstream — at which point a maintainer needs to bump and commit [`bin/requirements.lock.txt`](bin/requirements.lock.txt) before "Install Dependencies" will pick up the fix (dependency versions are pinned deliberately, not auto-updated, for supply-chain safety).
 
 ---
 

@@ -13,6 +13,15 @@ Because gkeepapi/gpsoauth are not part of the Python standard library, this
 script bootstraps a private virtualenv under the plugin's state directory the
 first time you click "Install Dependencies" in the panel, then re-execs
 itself into that virtualenv's interpreter on every subsequent run.
+
+Dependencies are installed from requirements.lock.txt (shipped next to this
+script) with `pip install --require-hashes`, which pins every direct and
+transitive package to an exact version and sha256 hash. pip refuses to
+install anything whose downloaded artifact doesn't match one of those
+hashes, so a later, unreviewed release of gkeepapi/gpsoauth or any of their
+dependencies cannot silently change what code runs here (including the code
+that handles your Keep master token) until the lock file is deliberately
+updated and committed. See requirements.lock.txt for how to bump it.
 """
 
 import sys
@@ -242,6 +251,11 @@ def _venv_python_path(data_dir):
     return os.path.join(data_dir, VENV_DIRNAME, "bin", "python3")
 
 
+def _requirements_lock_path():
+    """Path to the pinned, hash-verified dependency lock file shipped with this script."""
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "requirements.lock.txt")
+
+
 def deps_importable():
     try:
         import gkeepapi  # noqa: F401
@@ -268,9 +282,13 @@ _maybe_reexec_into_venv()
 
 
 def install_dependencies():
-    """Create (if needed) a private venv and pip-install gkeepapi into it."""
+    """Create (if needed) a private venv and install the pinned, hash-verified
+    dependency set from requirements.lock.txt into it."""
     if deps_importable():
         return True, "Already installed"
+    lock_path = _requirements_lock_path()
+    if not os.path.isfile(lock_path):
+        return False, f"Missing dependency lock file: {lock_path}"
     data_dir = get_data_dir()
     venv_dir = os.path.join(data_dir, VENV_DIRNAME)
     venv_py = _venv_python_path(data_dir)
@@ -279,7 +297,12 @@ def install_dependencies():
             import venv as venv_mod
             venv_mod.EnvBuilder(with_pip=True, clear=True).create(venv_dir)
         proc = subprocess.run(
-            [venv_py, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "gkeepapi"],
+            [
+                venv_py, "-m", "pip", "install",
+                "--quiet", "--disable-pip-version-check",
+                "--require-hashes", "--no-deps",
+                "-r", lock_path,
+            ],
             capture_output=True,
             text=True,
             timeout=PIP_INSTALL_TIMEOUT,
