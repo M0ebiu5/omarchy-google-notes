@@ -1,0 +1,23 @@
+# Credentials, tokens, and cached state (NEVER commit)
+credentials.json
+token.json
+state.json
+device.json
+*.token
+.env
+.env.*
+
+# Python caches and the plugin's private venv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# OS and editor files
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+reply.md

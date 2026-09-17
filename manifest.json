@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "id": "waltermonschein.google-notes",
+  "name": "Google Notes",
+  "version": "1.0.0",
+  "author": "Walter Monschein",
+  "license": "MIT",
+  "description": "View, check off, and quick-add items in a Google Keep checklist note from the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Google Notes",
+    "description": "Synced Google Keep checklist popup with quick-add, interactive checkboxes, and multi-note switching. Unofficial — uses the same reverse-engineered API as Home Assistant's google_keep_sync integration.",
+    "category": "Productivity",
+    "aliases": ["notes", "keep", "google", "checklist", "todo"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "targetListId": "",
+      "targetListTitle": "My Notes",
+      "refreshIntervalSec": 120,
+      "showCompleted": false,
+      "countMode": "all"
+    },
+    "schema": [
+      {
+        "key": "targetListTitle",
+        "type": "string",
+        "label": "Note Title",
+        "defaultValue": "My Notes",
+        "description": "The title of the Google Keep checklist note to sync (must be a note with 'Show checkboxes' enabled)."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Sync Interval (seconds)",
+        "min": 30,
+        "max": 1800,
+        "step": 30,
+        "defaultValue": 120,
+        "description": "How often notes are fetched in the background."
+      },
+      {
+        "key": "showCompleted",
+        "type": "boolean",
+        "label": "Show checked items",
+        "defaultValue": false,
+        "description": "Show recently checked-off items at the bottom of the list."
+      },
+      {
+        "key": "countMode",
+        "type": "enum",
+        "label": "Bar badge counts",
+        "options": [
+          "all",
+          "none"
+        ],
+        "defaultValue": "all",
+        "description": "'all' counts all unchecked items; 'none' hides the badge."
+      }
+    ]
+  }
+}

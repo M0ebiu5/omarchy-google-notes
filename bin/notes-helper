@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""
+Google Notes (Keep) Helper for Omarchy Quattro
+Communicates via structured bounded JSON over stdin.
+
+Unlike Google Tasks, Google Keep has no public consumer API. This talks to
+Keep the same way Home Assistant's `google_keep_sync` integration does:
+via the unofficial `gkeepapi` + `gpsoauth` libraries, authenticated with a
+Google "master token" or an exchanged OAuth token (NOT your Google password).
+See README.md for how this works and its security implications.
+
+Because gkeepapi/gpsoauth are not part of the Python standard library, this
+script bootstraps a private virtualenv under the plugin's state directory the
+first time you click "Install Dependencies" in the panel, then re-execs
+itself into that virtualenv's interpreter on every subsequent run.
+"""
+
+import sys
+import os
+import stat
+import errno
+import secrets
+import json
+import subprocess
+
+MAX_STDIN_BYTES = 65536
+MAX_TOKEN_BYTES = 4096
+MAX_DEVICE_BYTES = 512
+MAX_STATE_BYTES = 16 * 1024 * 1024
+MAX_HTTP_ERROR_BYTES = 4096
+
+MAX_NOTE_LISTS = 50
+MAX_ITEMS = 300
+MAX_TITLE_LEN = 500
+MAX_LIST_TITLE_LEN = 200
+MAX_ERROR_LEN = 250
+
+PIP_INSTALL_TIMEOUT = 240
+
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+FILE_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+
+# Storage directories (prefers user-owned non-symlinked state dir)
+STATE_DIR = os.path.expanduser("~/.local/state/omarchy/waltermonschein.google-notes")
+CONFIG_DIR = os.path.expanduser("~/.config/omarchy/waltermonschein.google-notes")
+
+VENV_DIRNAME = "venv"
+
+
+def validate_directory(st, label, is_final=False):
+    """Ensure directory descriptor is a directory, not group/world writable, and owned properly."""
+    uid = os.getuid()
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(errno.ENOTDIR, f"Not a directory: {label}")
+    if st.st_uid not in (0, uid):
+        raise OSError(errno.EACCES, f"Unexpected owner for {label}: uid={st.st_uid}")
+    if is_final and st.st_uid != uid:
+        raise OSError(errno.EACCES, f"Final directory not owned by current user: {label}")
+    if (st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)) and not (st.st_uid == 0 and bool(st.st_mode & stat.S_ISVTX)):
+        raise OSError(errno.EACCES, f"Directory is group/world writable: {label}")
+
+
+def open_dir_safe(path, create=False):
+    """Walk and open directory descriptor component-by-component with strict O_NOFOLLOW."""
+    components = [p for p in os.path.normpath(path).split("/") if p]
+    current = os.open("/", DIR_FLAGS)
+    label = ""
+    try:
+        validate_directory(os.fstat(current), "/")
+        for i, comp in enumerate(components):
+            label += "/" + comp
+            is_final = (i == len(components) - 1)
+            try:
+                following = os.open(comp, DIR_FLAGS, dir_fd=current)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                validate_directory(os.fstat(current), os.path.dirname(label), is_final=False)
+                os.mkdir(comp, 0o700, dir_fd=current)
+                following = os.open(comp, DIR_FLAGS, dir_fd=current)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise OSError(errno.ELOOP, f"Refusing symlink or non-directory at {label}") from exc
+                raise
+            os.close(current)
+            current = following
+            validate_directory(os.fstat(current), label, is_final=is_final)
+        return current
+    except Exception:
+        os.close(current)
+        raise
+
+
+def get_data_dir():
+    """Return verified private storage directory refusing symlinked directory components."""
+    for d in [STATE_DIR, CONFIG_DIR]:
+        try:
+            fd = open_dir_safe(d, create=False)
+            os.close(fd)
+            return d
+        except Exception:
+            continue
+    try:
+        fd = open_dir_safe(STATE_DIR, create=True)
+        os.close(fd)
+        return STATE_DIR
+    except Exception:
+        return STATE_DIR
+
+
+def safe_read_file(dir_fd, filename, max_bytes):
+    """Read a file safely: O_NOFOLLOW, non-blocking, regular file only, owned by user, bounded read."""
+    try:
+        fd = os.open(filename, FILE_READ_FLAGS, dir_fd=dir_fd)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(errno.EINVAL, f"Not a regular file: {filename}")
+        if st.st_uid != os.getuid():
+            raise OSError(errno.EACCES, f"File not owned by user: {filename}")
+        if st.st_nlink != 1:
+            raise OSError(errno.EINVAL, f"File has unexpected link count: {filename}")
+        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise OSError(errno.EACCES, f"File is group/world writable: {filename}")
+        if st.st_size > max_bytes:
+            raise OSError(errno.EFBIG, f"File exceeds size limit ({max_bytes} bytes): {filename}")
+
+        os.set_blocking(fd, True)
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(65536, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise OSError(errno.EFBIG, f"File exceeds size limit ({max_bytes} bytes): {filename}")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def safe_read_json(dir_path, filename, max_bytes=MAX_TOKEN_BYTES):
+    """Safely read and parse JSON file from a directory with descriptor traversal."""
+    try:
+        dir_fd = open_dir_safe(dir_path, create=False)
+    except Exception:
+        return None
+    try:
+        data = safe_read_file(dir_fd, filename, max_bytes)
+        if not data:
+            return None
+        return json.loads(data.decode("utf-8"))
+    except Exception:
+        return None
+    finally:
+        os.close(dir_fd)
+
+
+def safe_write_json(dir_path, filename, obj, max_bytes=MAX_TOKEN_BYTES):
+    """Atomically write JSON with 0o600 creation mode, O_NOFOLLOW, and fsync."""
+    payload = json.dumps(obj).encode("utf-8")
+    if len(payload) > max_bytes:
+        raise ValueError(f"Payload exceeds {max_bytes} bytes")
+
+    dir_fd = open_dir_safe(dir_path, create=True)
+    temp_name = f".{filename}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    temp_fd = -1
+    try:
+        temp_fd = os.open(
+            temp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dir_fd
+        )
+        st = os.fstat(temp_fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            raise OSError(errno.EACCES, "Invalid temporary file stat")
+
+        view = memoryview(payload)
+        while view:
+            written = os.write(temp_fd, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "Short write to temp file")
+            view = view[written:]
+        os.fsync(temp_fd)
+        os.close(temp_fd)
+        temp_fd = -1
+
+        os.replace(temp_name, filename, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        temp_name = ""
+        os.fsync(dir_fd)
+    finally:
+        if temp_fd >= 0:
+            os.close(temp_fd)
+        if temp_name:
+            try:
+                os.unlink(temp_name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+        os.close(dir_fd)
+
+
+def safe_remove_file(dir_path, filename):
+    """Safely remove a file relative to a verified directory descriptor."""
+    try:
+        dir_fd = open_dir_safe(dir_path, create=False)
+    except Exception:
+        return
+    try:
+        os.unlink(filename, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+# ---------------------------------------------------------------------------
+# Device identity (kept stable per-install; NOT derived from the real MAC
+# address, unlike gkeepapi's default, and never shared across installs).
+# ---------------------------------------------------------------------------
+
+def get_or_create_device_id():
+    cfg = safe_read_json(get_data_dir(), "device.json", MAX_DEVICE_BYTES)
+    if cfg and isinstance(cfg, dict) and cfg.get("device_id"):
+        return str(cfg["device_id"])
+    device_id = secrets.token_hex(8)
+    safe_write_json(get_data_dir(), "device.json", {"device_id": device_id}, MAX_DEVICE_BYTES)
+    return device_id
+
+
+# ---------------------------------------------------------------------------
+# Dependency bootstrap: gkeepapi/gpsoauth are not stdlib. We install them
+# into a private venv under our state dir on request, then re-exec this same
+# script under that venv's interpreter on every future invocation.
+# ---------------------------------------------------------------------------
+
+def _venv_python_path(data_dir):
+    return os.path.join(data_dir, VENV_DIRNAME, "bin", "python3")
+
+
+def deps_importable():
+    try:
+        import gkeepapi  # noqa: F401
+        import gpsoauth  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _maybe_reexec_into_venv():
+    """If deps aren't importable here but a working venv exists, re-exec into it."""
+    if deps_importable():
+        return
+    try:
+        venv_py = _venv_python_path(get_data_dir())
+        if os.path.isfile(venv_py) and os.access(venv_py, os.X_OK):
+            if os.path.realpath(venv_py) != os.path.realpath(sys.executable):
+                os.execv(venv_py, [venv_py] + sys.argv)
+    except Exception:
+        pass
+
+
+_maybe_reexec_into_venv()
+
+
+def install_dependencies():
+    """Create (if needed) a private venv and pip-install gkeepapi into it."""
+    if deps_importable():
+        return True, "Already installed"
+    data_dir = get_data_dir()
+    venv_dir = os.path.join(data_dir, VENV_DIRNAME)
+    venv_py = _venv_python_path(data_dir)
+    try:
+        if not os.path.isfile(venv_py):
+            import venv as venv_mod
+            venv_mod.EnvBuilder(with_pip=True, clear=True).create(venv_dir)
+        proc = subprocess.run(
+            [venv_py, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "gkeepapi"],
+            capture_output=True,
+            text=True,
+            timeout=PIP_INSTALL_TIMEOUT,
+        )
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "unknown error")[-500:]
+            return False, f"pip install failed: {tail}"
+        # Deliberately do NOT re-exec here: stdin has already been consumed
+        # for this request, and re-execing would leave main() blocked on a
+        # second readline() that never arrives. The *next* invocation will
+        # pick up the venv automatically via _maybe_reexec_into_venv().
+        return True, "Installed successfully"
+    except subprocess.TimeoutExpired:
+        return False, "Dependency installation timed out. Check your network connection."
+    except Exception as e:
+        return False, f"Dependency installation failed: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Token / state storage
+# ---------------------------------------------------------------------------
+
+def load_token():
+    tok = safe_read_json(get_data_dir(), "token.json", MAX_TOKEN_BYTES)
+    if tok and isinstance(tok, dict) and tok.get("email") and tok.get("master_token"):
+        return tok
+    return None
+
+
+def save_token(email, master_token):
+    safe_write_json(get_data_dir(), "token.json", {"email": email, "master_token": master_token}, MAX_TOKEN_BYTES)
+
+
+def load_state():
+    return safe_read_json(get_data_dir(), "state.json", MAX_STATE_BYTES)
+
+
+def save_state(state):
+    try:
+        safe_write_json(get_data_dir(), "state.json", state, MAX_STATE_BYTES)
+    except Exception:
+        # Cache is best-effort; losing it just means the next call does a full resync.
+        pass
+
+
+def validate_token_format(token):
+    """A master token starts with 'aas_et/' and is 223 chars; an OAuth token starts with 'oauth2_4/'."""
+    expected_master_token_length = 223
+    if not token:
+        return False
+    if token.startswith("oauth2_4/"):
+        return True
+    if token.startswith("aas_et/") and len(token) == expected_master_token_length:
+        return True
+    return False
+
+
+def is_master_token(token):
+    return token.startswith("aas_et/") and len(token) == 223
+
+
+# ---------------------------------------------------------------------------
+# Google Keep session helpers (require gkeepapi/gpsoauth to be importable)
+# ---------------------------------------------------------------------------
+
+def get_authenticated_keep():
+    if not deps_importable():
+        raise ValueError("Dependencies are not installed yet. Click 'Install Dependencies' first.")
+    import gkeepapi
+
+    tok = load_token()
+    if not tok:
+        raise ValueError("Not authenticated with Google Keep. Please sign in first.")
+
+    device_id = get_or_create_device_id()
+    state = load_state()
+    keep = gkeepapi.Keep()
+    try:
+        keep.authenticate(tok["email"], tok["master_token"], state=state, sync=True, device_id=device_id)
+    except gkeepapi.exception.ResyncRequiredException:
+        keep.sync(True)
+    except gkeepapi.exception.LoginException as e:
+        raise RuntimeError(f"Google Keep authentication failed: {e}"[:MAX_ERROR_LEN])
+    return keep
+
+
+def find_list_node(keep, list_id):
+    import gkeepapi
+
+    node = keep.get(list_id)
+    if node is None or not isinstance(node, gkeepapi.node.List):
+        raise ValueError("Note list not found (it may have been trashed or deleted).")
+    return node
+
+
+def serialize_list(node):
+    return {
+        "id": node.id,
+        "title": (node.title or "")[:MAX_LIST_TITLE_LEN] or "(untitled note)",
+    }
+
+
+def serialize_item(item):
+    return {
+        "id": item.id,
+        "text": str(item.text or "")[:MAX_TITLE_LEN],
+        "checked": bool(item.checked),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Action handlers
+# ---------------------------------------------------------------------------
+
+def handle_action(req):
+    action = req.get("action", "")
+
+    if action == "status":
+        tok = load_token()
+        return {
+            "depsInstalled": deps_importable(),
+            "authenticated": bool(tok),
+            "email": (tok or {}).get("email", ""),
+            "config_dir": get_data_dir(),
+        }
+
+    elif action == "install-deps":
+        ok, message = install_dependencies()
+        return {"status": "ok" if ok else "error", "installed": ok, "message": message[:MAX_ERROR_LEN]}
+
+    elif action == "auth":
+        if not deps_importable():
+            raise ValueError("Dependencies are not installed yet. Click 'Install Dependencies' first.")
+        import gkeepapi
+        import gpsoauth
+
+        email = str(req.get("email", "")).strip()
+        token = str(req.get("token", "")).strip()
+        if not email or "@" not in email:
+            raise ValueError("Missing or invalid Google account email.")
+        if not validate_token_format(token):
+            raise ValueError("Token must start with 'oauth2_4/' or be a 223-character 'aas_et/' master token.")
+
+        device_id = get_or_create_device_id()
+        master_token = token
+        if not is_master_token(token):
+            exchange = gpsoauth.exchange_token(email, token, device_id)
+            if "Token" not in exchange:
+                raise RuntimeError(f"OAuth token exchange failed: {exchange.get('Error', 'unknown error')}"[:MAX_ERROR_LEN])
+            master_token = exchange["Token"]
+
+        keep = gkeepapi.Keep()
+        try:
+            keep.authenticate(email, master_token, sync=True, device_id=device_id)
+        except gkeepapi.exception.LoginException as e:
+            raise RuntimeError(f"Sign-in failed: {e}"[:MAX_ERROR_LEN])
+
+        save_token(email, keep.getMasterToken())
+        save_state(keep.dump())
+        return {"status": "ok", "authenticated": True}
+
+    elif action == "logout":
+        safe_remove_file(get_data_dir(), "token.json")
+        safe_remove_file(get_data_dir(), "state.json")
+        return {"status": "ok", "message": "Logged out"}
+
+    elif action == "list-notelists":
+        keep = get_authenticated_keep()
+        import gkeepapi
+
+        nodes = [
+            n for n in keep.all()
+            if isinstance(n, gkeepapi.node.List) and not n.trashed and not n.deleted and not n.archived
+        ]
+        nodes.sort(key=lambda n: (n.title or "").lower())
+        result = [serialize_list(n) for n in nodes[:MAX_NOTE_LISTS]]
+        save_state(keep.dump())
+        return result
+
+    elif action == "list-items":
+        list_id = str(req.get("list_id", "")).strip()
+        if not list_id:
+            raise ValueError("Missing list_id")
+        keep = get_authenticated_keep()
+        node = find_list_node(keep, list_id)
+        items = [serialize_item(it) for it in node.items[:MAX_ITEMS]]
+        save_state(keep.dump())
+        return {"list_id": node.id, "title": node.title or "", "items": items}
+
+    elif action == "create-item":
+        list_id = str(req.get("list_id", "")).strip()
+        text = str(req.get("text", "")).strip()[:MAX_TITLE_LEN]
+        if not list_id:
+            raise ValueError("Missing list_id")
+        if not text:
+            raise ValueError("Missing text")
+        keep = get_authenticated_keep()
+        import gkeepapi
+
+        node = find_list_node(keep, list_id)
+        item = node.add(text, False, gkeepapi.node.NewListItemPlacementValue.Top)
+        keep.sync()
+        save_state(keep.dump())
+        return serialize_item(item)
+
+    elif action == "toggle-item":
+        list_id = str(req.get("list_id", "")).strip()
+        item_id = str(req.get("item_id", "")).strip()
+        checked = bool(req.get("checked", False))
+        if not list_id or not item_id:
+            raise ValueError("Missing list_id or item_id")
+        keep = get_authenticated_keep()
+        node = find_list_node(keep, list_id)
+        target = next((it for it in node.items if it.id == item_id), None)
+        if target is None:
+            raise ValueError("Item not found")
+        target.checked = checked
+        keep.sync()
+        save_state(keep.dump())
+        return {"status": "ok", "id": item_id, "checked": checked}
+
+    elif action == "delete-item":
+        list_id = str(req.get("list_id", "")).strip()
+        item_id = str(req.get("item_id", "")).strip()
+        if not list_id or not item_id:
+            raise ValueError("Missing list_id or item_id")
+        keep = get_authenticated_keep()
+        node = find_list_node(keep, list_id)
+        target = next((it for it in node.items if it.id == item_id), None)
+        if target is None:
+            raise ValueError("Item not found")
+        target.delete()
+        keep.sync()
+        save_state(keep.dump())
+        return {"status": "ok", "deleted": item_id}
+
+    elif action == "create-list":
+        title = str(req.get("title", "")).strip()[:MAX_LIST_TITLE_LEN]
+        if not title:
+            raise ValueError("Missing title")
+        keep = get_authenticated_keep()
+        node = keep.createList(title, [])
+        keep.sync()
+        save_state(keep.dump())
+        return serialize_list(node)
+
+    else:
+        raise ValueError(f"Unknown action: {action}")
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "status":
+        tok = load_token()
+        print(json.dumps({
+            "depsInstalled": deps_importable(),
+            "authenticated": bool(tok),
+            "email": (tok or {}).get("email", ""),
+            "config_dir": get_data_dir(),
+        }))
+        return
+
+    raw_input = sys.stdin.readline(MAX_STDIN_BYTES)
+    if not raw_input or not raw_input.strip():
+        print(json.dumps({"error": "Empty stdin payload"}), file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        req = json.loads(raw_input)
+        result = handle_action(req)
+        print(json.dumps(result))
+    except Exception as e:
+        err_msg = str(e)[:MAX_ERROR_LEN]
+        print(json.dumps({"error": err_msg}), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
