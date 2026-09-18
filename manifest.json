@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Walter Monschein",
   "license": "MIT",
-  "description": "View, check off, and quick-add items in a Google Keep checklist note from the Omarchy bar.",
+  "description": "View, check off, and quick-add items in a Google Keep checklist note from the Omarchy bar — synced across all your devices, ideal for grocery and to-do lists.",
   "kinds": [
     "bar-widget"
   ],

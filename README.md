@@ -4,7 +4,9 @@
 
 A lightweight, keyboard-friendly **Google Keep checklist** bar widget and panel for the Omarchy Quattro shell — the Google Notes counterpart to [omarchy-google-tasks](https://github.com/CJKaufman/omarchy-google-tasks).
 
-View a Google Keep checklist note, toggle checkboxes in real-time, and quick-add new items directly from the Omarchy top bar.
+View a Google Keep checklist note, toggle checkboxes in real-time, and quick-add new items directly from the Omarchy top bar. Since it's backed by Google Keep, your list syncs across all your devices — phone, web, and this bar widget — making it a great fit for grocery lists and running to-dos you check off on the go.
+
+If you also run Home Assistant, [`google_keep_sync`](https://github.com/watkins-matt/home-assistant-google-keep-sync) — the integration this plugin's auth flow is based on — lets you read and manage the same Keep checklists there.
 
 ---
 
@@ -27,6 +29,7 @@ If that trade-off doesn't work for you, consider [omarchy-google-tasks](https://
 
 - **📋 Live Sync with a Google Keep checklist note:** pick any note with "Show checkboxes" enabled and sync its items.
 - **☑️ Interactive checkboxes:** tick items off (or back on) directly from the bar.
+- **🔄 Synced across all your devices:** built on Google Keep, so the same list stays current on your phone, the web, and this widget — great for grocery lists and everyday to-dos.
 - **➕ Quick Add:** type any item and press `Enter` to add it instantly.
 - **🗒️ Multi-note switching:** seamlessly switch between different checklist notes.
 - **🔒 Local-only credentials:** your token stays on your machine with restricted (`0600`) permissions — nothing is sent anywhere except Google's own servers.
