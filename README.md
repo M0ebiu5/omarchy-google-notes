@@ -8,6 +8,8 @@ View a Google Keep checklist note, toggle checkboxes in real-time, and quick-add
 
 If you also run Home Assistant, [`google_keep_sync`](https://github.com/watkins-matt/home-assistant-google-keep-sync) — the integration this plugin's auth flow is based on — lets you read and manage the same Keep checklists there.
 
+<p align="center"><img src="preview.png" alt="Google Notes panel showing a synced Google Keep grocery checklist" width="480"></p>
+
 ---
 
 ## ⚠️ Read this before installing
