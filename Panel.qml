@@ -89,8 +89,7 @@ Panel {
   }
 
   function fetchNoteLists() {
-    if (!root.authenticated) return
-    listNoteListsProc.running = false
+    if (!root.authenticated || listNoteListsProc.running) return
     listNoteListsProc.inputPayload = JSON.stringify({ action: "list-notelists" })
     listNoteListsProc.running = true
   }
@@ -296,8 +295,9 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (!text || String(text).trim() === "") return
         try {
-          var arr = JSON.parse(String(text || "[]"))
+          var arr = JSON.parse(String(text))
           if (Array.isArray(arr) && arr.length > 0) {
             root.noteLists = arr.slice(0, 50)
             var target = null
