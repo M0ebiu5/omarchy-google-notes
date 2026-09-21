@@ -95,6 +95,19 @@ Panel {
     listNoteListsProc.running = true
   }
 
+  function selectList(list) {
+    if (!list || !list.id) return
+    root.activeListId = list.id
+    root.activeListTitle = list.title
+    root.fetchItems()
+    setActiveListProc.inputPayload = JSON.stringify({
+      action: "set-active-list",
+      list_id: list.id,
+      title: list.title
+    })
+    setActiveListProc.running = true
+  }
+
   function fetchItems() {
     if (!root.authenticated || root.activeListId === "") return
     root.scanning = true
@@ -217,6 +230,10 @@ Panel {
           root.authenticated = res.authenticated === true
           if (res.email && emailInput && emailInput.text === "") {
             emailInput.text = res.email
+          }
+          if (root.activeListId === "" && res.activeListId) {
+            root.activeListId = String(res.activeListId)
+            root.activeListTitle = String(res.activeListTitle || root.activeListTitle)
           }
           if (root.authenticated && root.noteLists.length === 0) {
             root.fetchNoteLists()
@@ -438,6 +455,24 @@ Panel {
       onStreamFinished: {
         if (text && text.trim() !== "") {
           console.warn("deleteItemProc error:", text)
+        }
+      }
+    }
+  }
+
+  Process {
+    id: setActiveListProc
+    command: [root.helper]
+    stdinEnabled: true
+    property string inputPayload: ""
+    onStarted: {
+      if (inputPayload) write(inputPayload + "\n")
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (text && text.trim() !== "") {
+          console.warn("setActiveListProc error:", text)
         }
       }
     }
@@ -789,11 +824,7 @@ Panel {
                       MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                          root.activeListId = modelData.id
-                          root.activeListTitle = modelData.title
-                          root.fetchItems()
-                        }
+                        onClicked: root.selectList(modelData)
                       }
                     }
                   }

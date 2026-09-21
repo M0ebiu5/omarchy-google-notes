@@ -37,6 +37,7 @@ MAX_TOKEN_BYTES = 4096
 MAX_DEVICE_BYTES = 512
 MAX_STATE_BYTES = 16 * 1024 * 1024
 MAX_HTTP_ERROR_BYTES = 4096
+MAX_ACTIVE_LIST_BYTES = 1024
 
 MAX_NOTE_LISTS = 50
 MAX_ITEMS = 300
@@ -336,6 +337,22 @@ def save_token(email, master_token):
     safe_write_json(get_data_dir(), "token.json", {"email": email, "master_token": master_token}, MAX_TOKEN_BYTES)
 
 
+def load_active_list():
+    al = safe_read_json(get_data_dir(), "active_list.json", MAX_ACTIVE_LIST_BYTES)
+    if al and isinstance(al, dict) and al.get("id"):
+        return al
+    return None
+
+
+def save_active_list(list_id, title):
+    safe_write_json(
+        get_data_dir(),
+        "active_list.json",
+        {"id": list_id, "title": title},
+        MAX_ACTIVE_LIST_BYTES,
+    )
+
+
 def load_state():
     return safe_read_json(get_data_dir(), "state.json", MAX_STATE_BYTES)
 
@@ -422,11 +439,14 @@ def handle_action(req):
 
     if action == "status":
         tok = load_token()
+        al = load_active_list()
         return {
             "depsInstalled": deps_importable(),
             "authenticated": bool(tok),
             "email": (tok or {}).get("email", ""),
             "config_dir": get_data_dir(),
+            "activeListId": (al or {}).get("id", ""),
+            "activeListTitle": (al or {}).get("title", ""),
         }
 
     elif action == "install-deps":
@@ -467,6 +487,7 @@ def handle_action(req):
     elif action == "logout":
         safe_remove_file(get_data_dir(), "token.json")
         safe_remove_file(get_data_dir(), "state.json")
+        safe_remove_file(get_data_dir(), "active_list.json")
         return {"status": "ok", "message": "Logged out"}
 
     elif action == "list-notelists":
@@ -538,6 +559,14 @@ def handle_action(req):
         keep.sync()
         save_state(keep.dump())
         return {"status": "ok", "deleted": item_id}
+
+    elif action == "set-active-list":
+        list_id = str(req.get("list_id", "")).strip()
+        title = str(req.get("title", "")).strip()[:MAX_LIST_TITLE_LEN]
+        if not list_id:
+            raise ValueError("Missing list_id")
+        save_active_list(list_id, title)
+        return {"status": "ok"}
 
     elif action == "create-list":
         title = str(req.get("title", "")).strip()[:MAX_LIST_TITLE_LEN]
