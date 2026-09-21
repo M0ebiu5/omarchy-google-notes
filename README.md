@@ -156,6 +156,18 @@ There's also a **"Show finished items"** toggle in the panel's Settings (gear ic
 
 ---
 
+## 📝 Changelog
+
+### Unreleased
+
+- **Fix:** the selected checklist note now persists across Omarchy shell restarts. Previously it always reverted to the alphabetically-first note, because the selection only lived in memory and a startup race could clobber it before the note list finished loading.
+
+### 1.0.0
+
+- Initial release: live sync with a Google Keep checklist note, interactive checkboxes, quick-add, multi-note switching, and hash-verified, sandboxed dependency install.
+
+---
+
 ## Credits
 
 This plugin is a Google Notes counterpart to [omarchy-google-tasks](https://github.com/CJKaufman/omarchy-google-tasks) by Carl Kaufman, and its Keep authentication flow follows the approach pioneered by [home-assistant-google-keep-sync](https://github.com/watkins-matt/home-assistant-google-keep-sync) by Matt Watkins, built on [`gkeepapi`](https://github.com/kiwiz/gkeepapi) and [`gpsoauth`](https://github.com/simon-weber/gpsoauth).
