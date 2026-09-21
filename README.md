@@ -158,7 +158,7 @@ There's also a **"Show finished items"** toggle in the panel's Settings (gear ic
 
 ## 📝 Changelog
 
-### Unreleased
+### 1.0.1
 
 - **Fix:** the selected checklist note now persists across Omarchy shell restarts. Previously it always reverted to the alphabetically-first note, because the selection only lived in memory and a startup race could clobber it before the note list finished loading.
 

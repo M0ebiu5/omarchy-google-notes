@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "waltermonschein.google-notes",
   "name": "Google Notes",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Walter Monschein",
   "license": "MIT",
   "description": "View, check off, and quick-add items in a Google Keep checklist note from the Omarchy bar — synced across all your devices, ideal for grocery and to-do lists.",
